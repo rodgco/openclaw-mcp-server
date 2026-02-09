@@ -117,13 +117,10 @@ function authenticate(req, res, next) {
  */
 async function sendToOpenClaw(message, timeout = 120) {
   return new Promise((resolve, reject) => {
-    const escapedMessage = message.replace(/"/g, '\\"');
-    
     const proc = spawn('openclaw', [
-      'sessions',
-      'send',
-      '--label', config.sessionLabel,
-      '--message', escapedMessage,
+      'agent',
+      '--session-id', config.sessionLabel,
+      '--message', message,
       '--timeout', timeout.toString()
     ]);
 
