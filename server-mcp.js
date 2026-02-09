@@ -142,119 +142,129 @@ async function listSessions() {
   });
 }
 
-// Criar servidor MCP
-const server = new Server(
-  {
-    name: `${config.botName.toLowerCase().replace(/\s+/g, '-')}-mcp-server`,
-    version: "1.0.0",
-  },
-  {
-    capabilities: {
-      tools: {},
+/**
+ * Cria uma nova instância do servidor MCP
+ * (necessário porque cada conexão precisa de uma instância separada)
+ */
+function createMCPServer() {
+  const server = new Server(
+    {
+      name: `${config.botName.toLowerCase().replace(/\s+/g, '-')}-mcp-server`,
+      version: "1.0.0",
     },
-  }
-);
-
-// Registrar handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "ask",
-        description: `Enviar uma pergunta ou mensagem para ${config.botName}. Use quando precisar consultar informações, contexto, ou delegar tarefas específicas.`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            message: {
-              type: "string",
-              description: `A mensagem ou pergunta para enviar a ${config.botName}`,
-            },
-          },
-          required: ["message"],
-        },
+    {
+      capabilities: {
+        tools: {},
       },
-      {
-        name: "memory_search",
-        description: `Buscar na memória de longo prazo de ${config.botName} (MEMORY.md). Útil para encontrar decisões passadas, contexto de projetos, etc.`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "Termo ou frase para buscar na memória",
-            },
-          },
-          required: ["query"],
-        },
-      },
-      {
-        name: "sessions_status",
-        description: "Verificar status das sessões do OpenClaw",
-        inputSchema: {
-          type: "object",
-          properties: {},
-        },
-      },
-    ],
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  try {
-    let result;
-
-    switch (name) {
-      case "ask":
-        if (!args?.message) {
-          throw new Error("Missing 'message' argument");
-        }
-        result = await sendToOpenClaw(args.message);
-        break;
-
-      case "memory_search":
-        if (!args?.query) {
-          throw new Error("Missing 'query' argument");
-        }
-        result = await searchMemory(args.query);
-        break;
-
-      case "sessions_status":
-        result = await listSessions();
-        break;
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
     }
+  );
 
+  // Registrar handlers
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      content: [
+      tools: [
         {
-          type: "text",
-          text: result || "Success",
+          name: "ask",
+          description: `Enviar uma pergunta ou mensagem para ${config.botName}. Use quando precisar consultar informações, contexto, ou delegar tarefas específicas.`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              message: {
+                type: "string",
+                description: `A mensagem ou pergunta para enviar a ${config.botName}`,
+              },
+            },
+            required: ["message"],
+          },
+        },
+        {
+          name: "memory_search",
+          description: `Buscar na memória de longo prazo de ${config.botName} (MEMORY.md). Útil para encontrar decisões passadas, contexto de projetos, etc.`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "Termo ou frase para buscar na memória",
+              },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "sessions_status",
+          description: "Verificar status das sessões do OpenClaw",
+          inputSchema: {
+            type: "object",
+            properties: {},
+          },
         },
       ],
     };
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Error: ${error.message}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-});
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+
+    try {
+      let result;
+
+      switch (name) {
+        case "ask":
+          if (!args?.message) {
+            throw new Error("Missing 'message' argument");
+          }
+          result = await sendToOpenClaw(args.message);
+          break;
+
+        case "memory_search":
+          if (!args?.query) {
+            throw new Error("Missing 'query' argument");
+          }
+          result = await searchMemory(args.query);
+          break;
+
+        case "sessions_status":
+          result = await listSessions();
+          break;
+
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result || "Success",
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  return server;
+}
 
 // MCP endpoint (suporta POST e GET conforme spec)
+// Cada conexão recebe uma nova instância do servidor MCP
 app.all("/mcp", authenticate, async (req, res) => {
-  const transport = new SSEServerTransport("/mcp", res);
-  await server.connect(transport);
-  
   console.log(`[MCP] New connection from ${req.ip}`);
+  
+  const server = createMCPServer();
+  const transport = new SSEServerTransport("/mcp", res);
+  
+  await server.connect(transport);
 });
 
 // Health check
