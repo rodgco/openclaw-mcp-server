@@ -7,6 +7,7 @@
  * Configurable via environment variables for reuse by others.
  */
 
+import 'dotenv/config';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {

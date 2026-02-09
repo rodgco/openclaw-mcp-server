@@ -14,7 +14,14 @@
     "generate-key": "openssl rand -base64 32",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["mcp", "openclaw", "assistant", "claude", "streamable-http", "sse"],
+  "keywords": [
+    "mcp",
+    "openclaw",
+    "assistant",
+    "claude",
+    "streamable-http",
+    "sse"
+  ],
   "author": "Rodrigo Couto",
   "license": "MIT",
   "repository": {
@@ -26,6 +33,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "dotenv": "^17.2.4",
     "express": "^4.21.2"
   }
 }
