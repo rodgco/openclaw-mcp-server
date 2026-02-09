@@ -161,6 +161,7 @@ function createMCPServer() {
 
   // Registrar handlers
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    console.log(`[MCP] tools/list requested`);
     return {
       tools: [
         {
@@ -205,6 +206,7 @@ function createMCPServer() {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    console.log(`[MCP] tools/call requested: ${name}`, args);
 
     try {
       let result;
@@ -259,12 +261,38 @@ function createMCPServer() {
 // MCP endpoint (suporta POST e GET conforme spec)
 // Cada conexão recebe uma nova instância do servidor MCP
 app.all("/mcp", authenticate, async (req, res) => {
-  console.log(`[MCP] New connection from ${req.ip}`);
+  const connectionId = Date.now().toString(36);
+  console.log(`[MCP:${connectionId}] New connection from ${req.ip}`);
+  console.log(`[MCP:${connectionId}] Method: ${req.method}`);
+  console.log(`[MCP:${connectionId}] Headers:`, JSON.stringify(req.headers, null, 2));
+  console.log(`[MCP:${connectionId}] Body:`, JSON.stringify(req.body, null, 2));
   
-  const server = createMCPServer();
-  const transport = new SSEServerTransport("/mcp", res);
-  
-  await server.connect(transport);
+  try {
+    const server = createMCPServer();
+    console.log(`[MCP:${connectionId}] Server instance created`);
+    
+    const transport = new SSEServerTransport("/mcp", res);
+    console.log(`[MCP:${connectionId}] Transport created`);
+    
+    // Monitor transport events
+    transport.onclose = () => {
+      console.log(`[MCP:${connectionId}] Transport closed`);
+    };
+    
+    transport.onerror = (error) => {
+      console.log(`[MCP:${connectionId}] Transport error:`, error);
+    };
+    
+    console.log(`[MCP:${connectionId}] Connecting server to transport...`);
+    await server.connect(transport);
+    console.log(`[MCP:${connectionId}] Server connected to transport`);
+    
+  } catch (error) {
+    console.error(`[MCP:${connectionId}] Error:`, error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
+  }
 });
 
 // Health check
