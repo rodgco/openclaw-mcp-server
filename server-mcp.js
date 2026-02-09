@@ -3,22 +3,17 @@
 /**
  * OpenClaw MCP Server - Streamable HTTP Transport
  * 
- * Generic MCP server that exposes OpenClaw sessions via Streamable HTTP.
- * Configurable via environment variables for reuse by others.
+ * Manual implementation of MCP Streamable HTTP transport.
+ * The SDK's SSEServerTransport is for the old protocol.
  */
 
 import 'dotenv/config';
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
 import { spawn } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { randomUUID } from "crypto";
 
 // Configuração via variáveis de ambiente
 const config = {
@@ -40,18 +35,78 @@ if (!config.apiKey) {
 const app = express();
 app.use(express.json());
 
+// Session storage
+const sessions = new Map();
+
+// Server info
+const SERVER_INFO = {
+  name: `${config.botName.toLowerCase().replace(/\s+/g, '-')}-mcp-server`,
+  version: "1.0.0",
+};
+
+const SERVER_CAPABILITIES = {
+  tools: {},
+};
+
+const TOOLS = [
+  {
+    name: "ask",
+    description: `Enviar uma pergunta ou mensagem para ${config.botName}. Use quando precisar consultar informações, contexto, ou delegar tarefas específicas.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: {
+          type: "string",
+          description: `A mensagem ou pergunta para enviar a ${config.botName}`,
+        },
+      },
+      required: ["message"],
+    },
+  },
+  {
+    name: "memory_search",
+    description: `Buscar na memória de longo prazo de ${config.botName} (MEMORY.md). Útil para encontrar decisões passadas, contexto de projetos, etc.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Termo ou frase para buscar na memória",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "sessions_status",
+    description: "Verificar status das sessões do OpenClaw",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+];
+
 // Middleware de autenticação
 function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
   
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Missing or invalid authorization header" });
+    return res.status(401).json({ 
+      jsonrpc: "2.0",
+      error: { code: -32600, message: "Missing or invalid authorization header" },
+      id: null 
+    });
   }
 
   const token = authHeader.substring(7);
   
   if (token !== config.apiKey) {
-    return res.status(403).json({ error: "Invalid API key" });
+    return res.status(403).json({ 
+      jsonrpc: "2.0",
+      error: { code: -32600, message: "Invalid API key" },
+      id: null 
+    });
   }
 
   next();
@@ -95,7 +150,7 @@ async function sendToOpenClaw(message, timeout = 120) {
 /**
  * Busca na memória do assistente (MEMORY.md)
  */
-async function searchMemory(query) {
+function searchMemory(query) {
   const memoryPath = join(config.workspace, "MEMORY.md");
 
   if (!existsSync(memoryPath)) {
@@ -143,156 +198,175 @@ async function listSessions() {
 }
 
 /**
- * Cria uma nova instância do servidor MCP
- * (necessário porque cada conexão precisa de uma instância separada)
+ * Handle JSON-RPC request
  */
-function createMCPServer() {
-  const server = new Server(
-    {
-      name: `${config.botName.toLowerCase().replace(/\s+/g, '-')}-mcp-server`,
-      version: "1.0.0",
-    },
-    {
-      capabilities: {
-        tools: {},
-      },
-    }
-  );
+async function handleRequest(method, params, id) {
+  console.log(`[MCP] Handling method: ${method}`);
+  
+  switch (method) {
+    case "initialize":
+      const sessionId = randomUUID();
+      sessions.set(sessionId, { 
+        initialized: true, 
+        protocolVersion: params.protocolVersion,
+        clientInfo: params.clientInfo 
+      });
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          protocolVersion: "2024-11-05",
+          capabilities: SERVER_CAPABILITIES,
+          serverInfo: SERVER_INFO,
+          sessionId,
+        },
+      };
 
-  // Registrar handlers
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    console.log(`[MCP] tools/list requested`);
-    return {
-      tools: [
-        {
-          name: "ask",
-          description: `Enviar uma pergunta ou mensagem para ${config.botName}. Use quando precisar consultar informações, contexto, ou delegar tarefas específicas.`,
-          inputSchema: {
-            type: "object",
-            properties: {
-              message: {
-                type: "string",
-                description: `A mensagem ou pergunta para enviar a ${config.botName}`,
+    case "initialized":
+      // Client acknowledges initialization
+      return null; // No response needed for notification
+
+    case "tools/list":
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          tools: TOOLS,
+        },
+      };
+
+    case "tools/call":
+      const toolName = params.name;
+      const toolArgs = params.arguments || {};
+      console.log(`[MCP] Calling tool: ${toolName}`, toolArgs);
+      
+      try {
+        let result;
+        
+        switch (toolName) {
+          case "ask":
+            if (!toolArgs.message) {
+              throw new Error("Missing 'message' argument");
+            }
+            console.log(`[MCP] Sending to OpenClaw: ${toolArgs.message}`);
+            result = await sendToOpenClaw(toolArgs.message);
+            console.log(`[MCP] OpenClaw response received`);
+            break;
+
+          case "memory_search":
+            if (!toolArgs.query) {
+              throw new Error("Missing 'query' argument");
+            }
+            result = searchMemory(toolArgs.query);
+            break;
+
+          case "sessions_status":
+            result = await listSessions();
+            break;
+
+          default:
+            throw new Error(`Unknown tool: ${toolName}`);
+        }
+
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: result || "Success",
               },
-            },
-            required: ["message"],
+            ],
           },
-        },
-        {
-          name: "memory_search",
-          description: `Buscar na memória de longo prazo de ${config.botName} (MEMORY.md). Útil para encontrar decisões passadas, contexto de projetos, etc.`,
-          inputSchema: {
-            type: "object",
-            properties: {
-              query: {
-                type: "string",
-                description: "Termo ou frase para buscar na memória",
+        };
+      } catch (error) {
+        console.error(`[MCP] Tool error:`, error);
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: `Error: ${error.message}`,
               },
-            },
-            required: ["query"],
+            ],
+            isError: true,
           },
-        },
-        {
-          name: "sessions_status",
-          description: "Verificar status das sessões do OpenClaw",
-          inputSchema: {
-            type: "object",
-            properties: {},
-          },
-        },
-      ],
-    };
-  });
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    console.log(`[MCP] tools/call requested: ${name}`, args);
-
-    try {
-      let result;
-
-      switch (name) {
-        case "ask":
-          if (!args?.message) {
-            throw new Error("Missing 'message' argument");
-          }
-          result = await sendToOpenClaw(args.message);
-          break;
-
-        case "memory_search":
-          if (!args?.query) {
-            throw new Error("Missing 'query' argument");
-          }
-          result = await searchMemory(args.query);
-          break;
-
-        case "sessions_status":
-          result = await listSessions();
-          break;
-
-        default:
-          throw new Error(`Unknown tool: ${name}`);
+        };
       }
 
+    case "ping":
       return {
-        content: [
-          {
-            type: "text",
-            text: result || "Success",
-          },
-        ],
+        jsonrpc: "2.0",
+        id,
+        result: {},
       };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error: ${error.message}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
 
-  return server;
+    default:
+      return {
+        jsonrpc: "2.0",
+        id,
+        error: {
+          code: -32601,
+          message: `Method not found: ${method}`,
+        },
+      };
+  }
 }
 
-// MCP endpoint (suporta POST e GET conforme spec)
-// Cada conexão recebe uma nova instância do servidor MCP
-app.all("/mcp", authenticate, async (req, res) => {
-  const connectionId = Date.now().toString(36);
-  console.log(`[MCP:${connectionId}] New connection from ${req.ip}`);
-  console.log(`[MCP:${connectionId}] Method: ${req.method}`);
-  console.log(`[MCP:${connectionId}] Headers:`, JSON.stringify(req.headers, null, 2));
-  console.log(`[MCP:${connectionId}] Body:`, JSON.stringify(req.body, null, 2));
+// MCP endpoint - POST for requests
+app.post("/mcp", authenticate, async (req, res) => {
+  const { method, params, id, jsonrpc } = req.body;
   
-  try {
-    const server = createMCPServer();
-    console.log(`[MCP:${connectionId}] Server instance created`);
-    
-    const transport = new SSEServerTransport("/mcp", res);
-    console.log(`[MCP:${connectionId}] Transport created`);
-    
-    // Monitor transport events
-    transport.onclose = () => {
-      console.log(`[MCP:${connectionId}] Transport closed`);
-    };
-    
-    transport.onerror = (error) => {
-      console.log(`[MCP:${connectionId}] Transport error:`, error);
-    };
-    
-    console.log(`[MCP:${connectionId}] Connecting server to transport...`);
-    await server.connect(transport);
-    console.log(`[MCP:${connectionId}] Server connected to transport`);
-    
-  } catch (error) {
-    console.error(`[MCP:${connectionId}] Error:`, error);
-    if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
-    }
+  console.log(`[MCP] POST request - method: ${method}, id: ${id}`);
+  
+  if (jsonrpc !== "2.0") {
+    return res.status(400).json({
+      jsonrpc: "2.0",
+      error: { code: -32600, message: "Invalid JSON-RPC version" },
+      id: null,
+    });
   }
+
+  try {
+    const response = await handleRequest(method, params || {}, id);
+    
+    if (response === null) {
+      // Notification - no response
+      res.status(202).end();
+    } else {
+      res.json(response);
+    }
+  } catch (error) {
+    console.error(`[MCP] Error:`, error);
+    res.status(500).json({
+      jsonrpc: "2.0",
+      error: { code: -32603, message: error.message },
+      id,
+    });
+  }
+});
+
+// MCP endpoint - GET for SSE stream (optional, for server-initiated messages)
+app.get("/mcp", authenticate, (req, res) => {
+  console.log(`[MCP] GET request - SSE stream`);
+  
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  // Keep connection alive
+  const keepAlive = setInterval(() => {
+    res.write(': keepalive\n\n');
+  }, 30000);
+
+  req.on('close', () => {
+    console.log(`[MCP] SSE stream closed`);
+    clearInterval(keepAlive);
+  });
 });
 
 // Health check
@@ -312,7 +386,7 @@ app.get("/", (req, res) => {
     transport: "streamable-http",
     endpoint: "/mcp",
     authentication: "Bearer token required",
-    tools: ["ask", "memory_search", "sessions_status"],
+    tools: TOOLS.map(t => t.name),
   });
 });
 
