@@ -1,0 +1,31 @@
+{
+  "name": "openclaw-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server that exposes OpenClaw assistants via Streamable HTTP transport",
+  "main": "server-mcp.js",
+  "type": "module",
+  "bin": {
+    "openclaw-mcp-server": "./server-mcp.js"
+  },
+  "scripts": {
+    "start": "node server-mcp.js",
+    "install-server": "./install.sh",
+    "uninstall": "./uninstall.sh",
+    "generate-key": "openssl rand -base64 32",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["mcp", "openclaw", "assistant", "claude", "streamable-http", "sse"],
+  "author": "Rodrigo Couto",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rodgco/openclaw-mcp-server"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "express": "^4.21.2"
+  }
+}
